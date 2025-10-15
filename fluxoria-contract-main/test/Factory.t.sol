@@ -171,7 +171,7 @@ contract FactoryTest is Test {
         
         // Check market details
         Fluxoria marketContract = Fluxoria(market);
-        assertEq(marketContract.owner(), address(factory));
+        assertEq(marketContract.owner(), user1); // Ownership is transferred to the creator
         
         // Check conditional tokens contract
         ConditionalTokens ctContract = ConditionalTokens(conditionalTokens);
@@ -255,11 +255,11 @@ contract FactoryTest is Test {
         
         // Check market details
         Fluxoria marketContract = Fluxoria(market);
-        assertEq(marketContract.owner(), address(factory));
+        assertEq(marketContract.owner(), user1); // Ownership is transferred to the creator
         
         // Check conditional tokens contract
         ConditionalTokens ctContract = ConditionalTokens(conditionalTokens);
-        assertEq(ctContract.owner(), address(factory));
+        assertEq(ctContract.owner(), address(factory)); // This one is created by Factory, not Fluxoria
         
         // Check market creation fee was paid
         assertEq(collateralToken.balanceOf(user1), initialBalance - MARKET_CREATION_FEE);

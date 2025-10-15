@@ -33,6 +33,9 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
     // Token balances for each outcome
     mapping(uint256 => mapping(address => mapping(uint256 => uint256))) public outcomeBalances;
     
+    // Allowances for outcome token transfers: marketId => owner => spender => outcome => amount
+    mapping(uint256 => mapping(address => mapping(address => mapping(uint256 => uint256)))) public outcomeAllowances;
+    
     // Multi-collateral support
     IERC20 public collateralToken; // Primary collateral token
     mapping(address => bool) public supportedCollaterals; // Supported collateral tokens
@@ -275,6 +278,106 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _outcome
     ) external view returns (uint256) {
         return outcomeBalances[_marketId][_user][_outcome];
+    }
+    
+    /**
+     * @dev Transfer outcome tokens to another address
+     * @param _marketId The market ID
+     * @param _to The recipient address
+     * @param _outcome The outcome index
+     * @param _amount The amount to transfer
+     */
+    function transferOutcomeTokens(
+        uint256 _marketId,
+        address _to,
+        uint256 _outcome,
+        uint256 _amount
+    ) external whenNotPaused {
+        require(_marketId < marketCount, "Market does not exist");
+        require(_to != address(0), "Cannot transfer to zero address");
+        require(_amount > 0, "Amount must be positive");
+        require(
+            outcomeBalances[_marketId][msg.sender][_outcome] >= _amount,
+            "Insufficient balance"
+        );
+        
+        outcomeBalances[_marketId][msg.sender][_outcome] -= _amount;
+        outcomeBalances[_marketId][_to][_outcome] += _amount;
+        
+        emit Transfer(msg.sender, _to, _amount);
+    }
+    
+    /**
+     * @dev Transfer outcome tokens from one address to another (with approval)
+     * @param _marketId The market ID
+     * @param _from The sender address
+     * @param _to The recipient address
+     * @param _outcome The outcome index
+     * @param _amount The amount to transfer
+     */
+    function transferOutcomeTokensFrom(
+        uint256 _marketId,
+        address _from,
+        address _to,
+        uint256 _outcome,
+        uint256 _amount
+    ) external whenNotPaused {
+        require(_marketId < marketCount, "Market does not exist");
+        require(_from != address(0), "Cannot transfer from zero address");
+        require(_to != address(0), "Cannot transfer to zero address");
+        require(_amount > 0, "Amount must be positive");
+        require(
+            outcomeBalances[_marketId][_from][_outcome] >= _amount,
+            "Insufficient balance"
+        );
+        
+        // Check and update allowance if not transferring own tokens
+        if (msg.sender != _from) {
+            uint256 currentAllowance = outcomeAllowances[_marketId][_from][msg.sender][_outcome];
+            require(currentAllowance >= _amount, "Insufficient allowance");
+            if (currentAllowance != type(uint256).max) {
+                outcomeAllowances[_marketId][_from][msg.sender][_outcome] = currentAllowance - _amount;
+            }
+        }
+        
+        outcomeBalances[_marketId][_from][_outcome] -= _amount;
+        outcomeBalances[_marketId][_to][_outcome] += _amount;
+        
+        emit Transfer(_from, _to, _amount);
+    }
+    
+    /**
+     * @dev Approve another address to transfer outcome tokens
+     * @param _marketId The market ID
+     * @param _spender The address to approve
+     * @param _outcome The outcome index
+     * @param _amount The amount to approve
+     */
+    function approveOutcomeTokens(
+        uint256 _marketId,
+        address _spender,
+        uint256 _outcome,
+        uint256 _amount
+    ) external {
+        require(_spender != address(0), "Cannot approve zero address");
+        outcomeAllowances[_marketId][msg.sender][_spender][_outcome] = _amount;
+        emit Approval(msg.sender, _spender, _amount);
+    }
+    
+    /**
+     * @dev Get the allowance for outcome tokens
+     * @param _marketId The market ID
+     * @param _owner The owner address
+     * @param _spender The spender address
+     * @param _outcome The outcome index
+     */
+    function allowanceOutcomeTokens(
+        uint256 _marketId,
+        address _owner,
+        address _spender,
+        uint256 _outcome
+    ) external view returns (uint256) {
+        return outcomeAllowances[_marketId][_owner][_spender][_outcome];
     }
     
     /**

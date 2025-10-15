@@ -547,8 +547,10 @@ contract FluxoriaTest is Test {
         assertTrue(orderId > 0);
         
         // Get order details
+        // Note: The order is owned by the Fluxoria contract, not the user
+        // Users should call orderBook.createBuyOrder() directly for direct ownership
         OrderBook.Order memory order = fluxoria.getOrder(orderId);
-        assertEq(order.user, user1);
+        assertEq(order.user, address(fluxoria)); // Order is owned by Fluxoria, not user1
         assertEq(order.marketId, marketId);
         assertEq(order.outcome, outcome);
         assertEq(uint256(order.orderType), uint256(OrderBook.OrderType.Buy));

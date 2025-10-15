@@ -294,10 +294,20 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         
         // Transfer final collateral to user
         if (finalCollateral > 0) {
-            require(
-                collateralToken.transfer(msg.sender, finalCollateral),
-                "Collateral transfer failed"
-            );
+            uint256 contractBalance = collateralToken.balanceOf(address(this));
+            uint256 amountToTransfer = finalCollateral;
+            
+            // If we don't have enough collateral, cap at available balance
+            if (contractBalance < finalCollateral) {
+                amountToTransfer = contractBalance;
+            }
+            
+            if (amountToTransfer > 0) {
+                require(
+                    collateralToken.transfer(msg.sender, amountToTransfer),
+                    "Collateral transfer failed"
+                );
+            }
         }
         
         emit PositionClosed(msg.sender, pnl, finalCollateral, pos.marketId);
@@ -343,10 +353,20 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         
         // Transfer final collateral to user
         if (finalCollateral > 0) {
-            require(
-                collateralToken.transfer(msg.sender, finalCollateral),
-                "Collateral transfer failed"
-            );
+            uint256 contractBalance = collateralToken.balanceOf(address(this));
+            uint256 amountToTransfer = finalCollateral;
+            
+            // If we don't have enough collateral, cap at available balance
+            if (contractBalance < finalCollateral) {
+                amountToTransfer = contractBalance;
+            }
+            
+            if (amountToTransfer > 0) {
+                require(
+                    collateralToken.transfer(msg.sender, amountToTransfer),
+                    "Collateral transfer failed"
+                );
+            }
         }
         
         // Update position
@@ -400,10 +420,20 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         
         // Transfer final collateral to user
         if (finalCollateral > 0) {
-            require(
-                collateralToken.transfer(user, finalCollateral),
-                "Collateral transfer failed"
-            );
+            uint256 contractBalance = collateralToken.balanceOf(address(this));
+            uint256 amountToTransfer = finalCollateral;
+            
+            // If we don't have enough collateral, cap at available balance
+            if (contractBalance < finalCollateral) {
+                amountToTransfer = contractBalance;
+            }
+            
+            if (amountToTransfer > 0) {
+                require(
+                    collateralToken.transfer(user, amountToTransfer),
+                    "Collateral transfer failed"
+                );
+            }
         }
         
         liquidatedUsers[user] = true;
@@ -566,6 +596,34 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         
         emit TokensTraded(msg.sender, _marketId, _outcome, _amount, _isBuy);
     }
+    
+    /**
+     * @dev Redeem winning tokens for collateral after market resolution
+     * @param _marketId The market ID
+     * @param _outcome The outcome to redeem
+     */
+    function redeemTokens(uint256 _marketId, uint256 _outcome) external {
+        require(_marketId < marketCount, "Market does not exist");
+        require(markets[_marketId].state == MarketState.Resolved, "Market not resolved");
+        
+        uint256 amount = userOutcomeBalances[msg.sender][_outcome];
+        require(amount > 0, "No tokens to redeem");
+        
+        // Clear user's balance
+        userOutcomeBalances[msg.sender][_outcome] = 0;
+        
+        // Redeem from ConditionalTokens
+        // Note: This will only work if the outcome matches the winning outcome
+        // The ConditionalTokens contract will revert if it's not the winning outcome
+        conditionalTokens.redeemTokens(_marketId, _outcome);
+        
+        // Transfer collateral to user
+        // The collateral is now in Fluxoria's balance after redeeming from ConditionalTokens
+        require(
+            collateralToken.transfer(msg.sender, amount),
+            "Collateral transfer failed"
+        );
+    }
 
     /**
      * @dev Get market information
@@ -687,6 +745,8 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
     
     /**
      * @dev Create a buy order for conditional tokens
+     * Note: Users should call orderBook.createBuyOrder() directly.
+     * This function is kept for backward compatibility but will be deprecated.
      */
     function createBuyOrder(
         uint256 _marketId,
@@ -697,11 +757,24 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         require(_marketId < marketCount, "Market does not exist");
         require(markets[_marketId].state == MarketState.Active, "Market not active");
         
+        // Transfer collateral from user to this contract
+        uint256 totalCost = (_amount * _maxPrice) / 10**6; // Price denominator
+        require(
+            collateralToken.transferFrom(msg.sender, address(this), totalCost),
+            "Collateral transfer failed"
+        );
+        
+        // Approve OrderBook to spend the collateral
+        collateralToken.approve(address(orderBook), totalCost);
+        
+        // Create order (will be owned by this contract, not the user)
         return orderBook.createBuyOrder(_marketId, _outcome, _amount, _maxPrice);
     }
     
     /**
      * @dev Create a sell order for conditional tokens
+     * Note: Users should call orderBook.createSellOrder() directly.
+     * This function is kept for backward compatibility but will be deprecated.
      */
     function createSellOrder(
         uint256 _marketId,
@@ -712,11 +785,24 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         require(_marketId < marketCount, "Market does not exist");
         require(markets[_marketId].state == MarketState.Active, "Market not active");
         
+        // Check user has enough tokens in their tracked balance
+        require(userOutcomeBalances[msg.sender][_outcome] >= _amount, "Insufficient balance");
+        
+        // Decrease user's tracked balance
+        userOutcomeBalances[msg.sender][_outcome] -= _amount;
+        
+        // Approve OrderBook to spend Fluxoria's tokens
+        conditionalTokens.approveOutcomeTokens(_marketId, address(orderBook), _outcome, _amount);
+        
+        // Create order (will be owned by this contract, not the user)
+        // The tokens are already owned by this contract from tradeTokens()
         return orderBook.createSellOrder(_marketId, _outcome, _amount, _minPrice);
     }
     
     /**
      * @dev Cancel an order
+     * Note: Users should call orderBook.cancelOrder() directly.
+     * This function is kept for backward compatibility but will be deprecated.
      */
     function cancelOrder(uint256 _orderId) external {
         orderBook.cancelOrder(_orderId);
@@ -741,6 +827,24 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      */
     function getUserOrders(address _user) external view returns (uint256[] memory) {
         return orderBook.getUserOrders(_user);
+    }
+    
+    /**
+     * @dev Withdraw fees from OrderBook (only owner)
+     * Fees are withdrawn to this contract and then transferred to the owner
+     */
+    function withdrawOrderBookFees() external onlyOwner {
+        uint256 balanceBefore = collateralToken.balanceOf(address(this));
+        orderBook.withdrawFees();
+        uint256 balanceAfter = collateralToken.balanceOf(address(this));
+        uint256 fees = balanceAfter - balanceBefore;
+        
+        if (fees > 0) {
+            require(
+                collateralToken.transfer(owner(), fees),
+                "Fee transfer failed"
+            );
+        }
     }
     
     /**

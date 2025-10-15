@@ -33,6 +33,7 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
     uint256 public nextOrderId = 1;
     uint256 public tradingFee = 25; // 0.25% (25 basis points)
     uint256 public constant FEE_DENOMINATOR = 10000;
+    uint256 public constant PRICE_DENOMINATOR = 10**6; // Price is in units of 10^6
     
     // External contracts
     ConditionalTokens public conditionalTokens;
@@ -93,7 +94,8 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         require(_maxPrice > 0, "Price must be positive");
         
         // Transfer collateral from user
-        uint256 totalCost = _amount * _maxPrice;
+        // Price is per token in units of 10^6, so we divide by PRICE_DENOMINATOR
+        uint256 totalCost = (_amount * _maxPrice) / PRICE_DENOMINATOR;
         require(
             collateralToken.transferFrom(msg.sender, address(this), totalCost),
             "Collateral transfer failed"
@@ -135,11 +137,8 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
             "Insufficient token balance"
         );
         
-        // Transfer tokens from user
-        require(
-            conditionalTokens.transferFrom(msg.sender, address(this), _amount),
-            "Token transfer failed"
-        );
+        // Transfer tokens from user using outcome-specific transfer
+        conditionalTokens.transferOutcomeTokensFrom(_marketId, msg.sender, address(this), _outcome, _amount);
         
         orderId = _createOrder(
             msg.sender,
@@ -164,6 +163,7 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
      */
     function cancelOrder(uint256 _orderId) external whenNotPaused nonReentrant {
         Order storage order = orders[_orderId];
+        require(order.user != address(0), "Order not active"); // Check if order exists
         require(order.user == msg.sender, "Not order owner");
         require(order.status == OrderStatus.Active || order.status == OrderStatus.PartiallyFilled, "Order not active");
         
@@ -171,7 +171,7 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         
         if (order.orderType == OrderType.Buy) {
             // Return unused collateral
-            uint256 unusedCollateral = remainingAmount * order.price;
+            uint256 unusedCollateral = (remainingAmount * order.price) / PRICE_DENOMINATOR;
             if (unusedCollateral > 0) {
                 require(
                     collateralToken.transfer(msg.sender, unusedCollateral),
@@ -181,10 +181,7 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         } else {
             // Return unused tokens
             if (remainingAmount > 0) {
-                require(
-                    conditionalTokens.transfer(msg.sender, remainingAmount),
-                    "Token return failed"
-                );
+                conditionalTokens.transferOutcomeTokens(order.marketId, msg.sender, order.outcome, remainingAmount);
             }
         }
         
@@ -212,7 +209,10 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
             if (oppositeOrder.outcome != order.outcome) continue;
             
             // Check if orders can match
-            if (!_canMatch(order, oppositeOrder)) continue;
+            bool canMatch = order.orderType == OrderType.Buy 
+                ? _canMatch(order, oppositeOrder)
+                : _canMatch(oppositeOrder, order);
+            if (!canMatch) continue;
             
             // Calculate match amount and price
             (uint256 matchAmount, uint256 matchPrice) = _calculateMatch(order, oppositeOrder);
@@ -259,7 +259,7 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         uint256 price
     ) internal {
         // Calculate fees
-        uint256 totalValue = amount * price;
+        uint256 totalValue = (amount * price) / PRICE_DENOMINATOR;
         uint256 fee = (totalValue * tradingFee) / FEE_DENOMINATOR;
         
         // Update order states
@@ -281,16 +281,24 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         // Execute transfers
         if (order1.orderType == OrderType.Buy) {
             // Buy order: give tokens, take collateral
-            require(
-                conditionalTokens.transfer(order1.user, amount),
-                "Token transfer failed"
-            );
+            conditionalTokens.transferOutcomeTokens(order1.marketId, order1.user, order1.outcome, amount);
             
-            // Return excess collateral
-            uint256 excessCollateral = (order1.amount - order1.filledAmount) * order1.price;
-            if (excessCollateral > 0) {
+            // Calculate excess collateral to return
+            // Buyer deposited: order1.amount * order1.price
+            // Buyer used so far: order1.filledAmount * price (at various match prices)
+            // For this match, buyer used: amount * price
+            // Excess from this match if price < order1.price: amount * (order1.price - price)
+            // Plus any remaining unfilled amount: (order1.amount - order1.filledAmount) * order1.price
+            uint256 excessFromPriceDiff = 0;
+            if (price < order1.price) {
+                excessFromPriceDiff = (amount * (order1.price - price)) / PRICE_DENOMINATOR;
+            }
+            uint256 excessFromUnfilled = ((order1.amount - order1.filledAmount) * order1.price) / PRICE_DENOMINATOR;
+            uint256 totalExcess = excessFromPriceDiff + excessFromUnfilled;
+            
+            if (totalExcess > 0) {
                 require(
-                    collateralToken.transfer(order1.user, excessCollateral),
+                    collateralToken.transfer(order1.user, totalExcess),
                     "Collateral return failed"
                 );
             }
@@ -310,17 +318,11 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
             // Return excess tokens
             uint256 excessTokens = order1.amount - order1.filledAmount;
             if (excessTokens > 0) {
-                require(
-                    conditionalTokens.transfer(order1.user, excessTokens),
-                    "Token return failed"
-                );
+                conditionalTokens.transferOutcomeTokens(order1.marketId, order1.user, order1.outcome, excessTokens);
             }
             
             // Give tokens to buy order user
-            require(
-                conditionalTokens.transfer(order2.user, amount),
-                "Token transfer failed"
-            );
+            conditionalTokens.transferOutcomeTokens(order2.marketId, order2.user, order2.outcome, amount);
         }
         
         emit OrdersMatched(order1.id, order2.id, amount, price);

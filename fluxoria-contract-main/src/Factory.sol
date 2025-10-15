@@ -112,6 +112,9 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
         conditionalTokensContract = address(marketContract.conditionalTokens());
         address orderBookContract = address(marketContract.orderBook());
         
+        // Transfer ownership of the market to the creator
+        marketContract.transferOwnership(msg.sender);
+        
         // Register the market
         allMarkets.push(market);
         isMarket[market] = true;
@@ -194,6 +197,9 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
         // Get the order book contract from the market
         Fluxoria marketContract = Fluxoria(market);
         address orderBookContract = address(marketContract.orderBook());
+        
+        // Transfer ownership of the market to the creator
+        marketContract.transferOwnership(msg.sender);
         
         // Register the market
         allMarkets.push(market);

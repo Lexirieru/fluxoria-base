@@ -193,11 +193,12 @@ contract IntegrationTest is Test {
         uint256 buyPrice = 0.6 * 10**6; // $0.60 per token
         uint256 sellPrice = 0.5 * 10**6; // $0.50 per token
         
+        // user1 has outcome 0 tokens, user2 has outcome 1 tokens
         vm.prank(user1);
-        uint256 buyOrderId = marketContract.createBuyOrder(0, 0, orderAmount, buyPrice);
+        uint256 buyOrderId = marketContract.createBuyOrder(0, 1, orderAmount, buyPrice); // Buy outcome 1
         
         vm.prank(user2);
-        uint256 sellOrderId = marketContract.createSellOrder(0, 0, orderAmount, sellPrice);
+        uint256 sellOrderId = marketContract.createSellOrder(0, 1, orderAmount, sellPrice); // Sell outcome 1
         
         // Check orders were created
         assertTrue(buyOrderId > 0);
@@ -235,8 +236,8 @@ contract IntegrationTest is Test {
         assertEq(pos1.leverage, leverage);
         assertEq(pos2.leverage, leverage);
         
-        // 7. Update market price to test liquidation
-        vm.prank(owner);
+        // 7. Update market price to test liquidation (user1 is the market creator/owner)
+        vm.prank(user1);
         marketContract.updatePrice(0, 2500); // Price drops from 3000 to 2500
         
         // Check position health
@@ -267,7 +268,8 @@ contract IntegrationTest is Test {
         // 10. Resolve market
         vm.warp(block.timestamp + 365 days + 1);
         
-        vm.prank(owner);
+        // Resolve market (user1 is the market creator/owner)
+        vm.prank(user1);
         marketContract.resolveMarket(0, 4000); // Final price: $4000
         
         // Check market is resolved
@@ -275,9 +277,10 @@ contract IntegrationTest is Test {
         assertEq(uint256(resolvedMarket.state), uint256(Fluxoria.MarketState.Resolved));
         assertTrue(resolvedMarket.isResolved);
         
-        // 11. Users redeem winning tokens
+        // 11. Users redeem winning tokens through Fluxoria
+        // Note: Only user1 should have tokens left (outcome 0) since user2 closed their position
         vm.prank(user1);
-        ctContract.redeemTokens(0, 0); // Redeem "Yes" tokens (assuming 0 is winning outcome)
+        marketContract.redeemTokens(0, 0); // Redeem "Yes" tokens (outcome 0 is the winning outcome)
         
         // Check user received collateral
         assertTrue(collateralToken.balanceOf(user1) > 0);
@@ -321,13 +324,18 @@ contract IntegrationTest is Test {
         assertEq(uint256(buyOrder.status), uint256(OrderBook.OrderStatus.Filled));
         assertEq(uint256(sellOrder.status), uint256(OrderBook.OrderStatus.Filled));
         
-        // Check market depth
-        (uint256 bestBuyPrice, uint256 bestSellPrice) = marketContract.getMarketDepth(0, 0);
-        assertTrue(bestBuyPrice > 0 || bestSellPrice > 0);
+        // Check that orders matched completely
+        assertEq(buyOrder.filledAmount, orderAmount);
+        assertEq(sellOrder.filledAmount, orderAmount);
         
-        // Check market orders
+        // Since orders matched and filled completely, market depth should be empty
+        (uint256 bestBuyPrice, uint256 bestSellPrice) = marketContract.getMarketDepth(0, 0);
+        assertEq(bestBuyPrice, 0);
+        assertEq(bestSellPrice, 0);
+        
+        // Check that orders exist in the market orders list
         (uint256[] memory buyOrders, uint256[] memory sellOrders) = marketContract.getMarketOrders(0);
-        assertTrue(buyOrders.length > 0 || sellOrders.length > 0);
+        assertTrue(buyOrders.length > 0 && sellOrders.length > 0);
     }
     
     function testLiquidationFlow() public {
@@ -359,8 +367,8 @@ contract IntegrationTest is Test {
         uint256 initialHealth = marketContract.getPositionHealth(user1);
         assertEq(initialHealth, 100);
         
-        // Update price to trigger liquidation
-        vm.prank(owner);
+        // Update price to trigger liquidation (user1 is the market creator/owner)
+        vm.prank(user1);
         marketContract.updatePrice(0, 2000); // Price drops significantly
         
         // Check position health decreased
@@ -486,8 +494,8 @@ contract IntegrationTest is Test {
         // Fast forward to resolution time
         vm.warp(block.timestamp + 365 days + 1);
         
-        // Resolve market
-        vm.prank(owner);
+        // Resolve market (user1 is the market creator/owner)
+        vm.prank(user1);
         marketContract.resolveMarket(0, 4000); // Final price: $4000
         
         // Check market is resolved
@@ -495,16 +503,20 @@ contract IntegrationTest is Test {
         assertEq(uint256(resolvedMarket.state), uint256(Fluxoria.MarketState.Resolved));
         assertTrue(resolvedMarket.isResolved);
         
-        // Users redeem winning tokens
+        // User1 redeems winning tokens (outcome 0 is the winner)
+        uint256 user1BalanceBefore = collateralToken.balanceOf(user1);
         vm.prank(user1);
-        ctContract.redeemTokens(0, 0); // Redeem "Yes" tokens
+        marketContract.redeemTokens(0, 0); // Redeem "Yes" tokens
         
+        // Check user1 received collateral for winning tokens
+        uint256 user1BalanceAfter = collateralToken.balanceOf(user1);
+        assertTrue(user1BalanceAfter > user1BalanceBefore);
+        assertEq(user1BalanceAfter - user1BalanceBefore, 1000 * 10**6); // Redeemed 1000 tokens
+        
+        // User2 cannot redeem losing outcome tokens
         vm.prank(user2);
-        ctContract.redeemTokens(0, 1); // Redeem "No" tokens
-        
-        // Check users received collateral
-        assertTrue(collateralToken.balanceOf(user1) > 0);
-        assertTrue(collateralToken.balanceOf(user2) > 0);
+        vm.expectRevert("Not the winning outcome");
+        marketContract.redeemTokens(0, 1); // Try to redeem "No" tokens (losing outcome)
     }
     
     function testFeeCollection() public {
@@ -543,16 +555,23 @@ contract IntegrationTest is Test {
         
         // Withdraw fees
         uint256 ownerBalance = collateralToken.balanceOf(owner);
+        uint256 user1Balance = collateralToken.balanceOf(user1);
         
+        // Factory owner can withdraw factory fees
         vm.prank(owner);
         factory.withdrawFees();
         
-        vm.prank(owner);
-        orderBook.withdrawFees();
+        // Market owner (user1) can withdraw orderBook fees through Fluxoria
+        vm.prank(user1);
+        marketContract.withdrawOrderBookFees();
         
-        // Check owner received fees
+        // Check factory owner received factory fees
         uint256 finalOwnerBalance = collateralToken.balanceOf(owner);
         assertTrue(finalOwnerBalance > ownerBalance);
+        
+        // Check market owner (user1) received orderBook fees
+        uint256 finalUser1Balance = collateralToken.balanceOf(user1);
+        assertTrue(finalUser1Balance > user1Balance);
     }
     
     function testEmergencyFunctions() public {
@@ -560,17 +579,17 @@ contract IntegrationTest is Test {
         (address market, address conditionalTokens) = _createTestMarket();
         Fluxoria marketContract = Fluxoria(market);
         
-        // Test admin functions
-        vm.prank(owner);
+        // Test admin functions (user1 is the market creator/owner)
+        vm.prank(user1);
         marketContract.setLiquidationThreshold(75);
         assertEq(marketContract.liquidationThreshold(), 75);
         
-        vm.prank(owner);
+        vm.prank(user1);
         marketContract.setLiquidationPenalty(10);
         assertEq(marketContract.liquidationPenalty(), 10);
         
         // Test non-owner cannot call admin functions
-        vm.prank(user1);
+        vm.prank(user2);
         vm.expectRevert();
         marketContract.setLiquidationThreshold(75);
         
@@ -579,9 +598,12 @@ contract IntegrationTest is Test {
         factory.setMarketCreationFee(200 * 10**6);
         assertEq(factory.marketCreationFee(), 200 * 10**6);
         
+        // Owner can withdraw fees (there are fees from market creation)
+        uint256 factoryBalanceBefore = collateralToken.balanceOf(owner);
         vm.prank(owner);
-        vm.expectRevert();
-        factory.withdrawFees(); // No fees to withdraw yet
+        factory.withdrawFees();
+        uint256 factoryBalanceAfter = collateralToken.balanceOf(owner);
+        assertTrue(factoryBalanceAfter > factoryBalanceBefore); // Fees were withdrawn
     }
     
     function _createTestMarket() internal returns (address market, address conditionalTokens) {

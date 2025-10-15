@@ -166,15 +166,15 @@ contract OrderBookTest is Test {
         vm.prank(user3);
         conditionalTokens.mintTokens(0, 0, TOKEN_AMOUNT);
         
-        // Approve order book to transfer tokens with max allowance
+        // Approve order book to transfer outcome tokens with max allowance
         vm.prank(user1);
-        conditionalTokens.approve(address(orderBook), type(uint256).max);
+        conditionalTokens.approveOutcomeTokens(0, address(orderBook), 0, type(uint256).max);
         
         vm.prank(user2);
-        conditionalTokens.approve(address(orderBook), type(uint256).max);
+        conditionalTokens.approveOutcomeTokens(0, address(orderBook), 0, type(uint256).max);
         
         vm.prank(user3);
-        conditionalTokens.approve(address(orderBook), type(uint256).max);
+        conditionalTokens.approveOutcomeTokens(0, address(orderBook), 0, type(uint256).max);
     }
     
     function testInitialization() public {
@@ -188,7 +188,7 @@ contract OrderBookTest is Test {
         uint256 outcome = 0;
         uint256 amount = 100 * 10**6; // 100 tokens
         uint256 maxPrice = 0.6 * 10**6; // $0.60 per token
-        uint256 totalCost = amount * maxPrice;
+        uint256 totalCost = (amount * maxPrice) / 10**6; // Divide by price denominator
         
         uint256 initialBalance = collateralToken.balanceOf(user1);
         
@@ -240,9 +240,15 @@ contract OrderBookTest is Test {
         orderBook.createBuyOrder(marketId, outcome, amount, 0);
         
         // Test insufficient collateral
+        // user1 has USER_BALANCE - TOKEN_AMOUNT = 9e9 after minting
+        // To make the cost exceed their balance, we need: (amount * maxPrice) / 1e6 > 9e9
+        // So: amount > 9e9 * 1e6 / maxPrice = 9e9 * 1e6 / 0.6e6 = 15e9
+        // But due to integer division, we need to ensure the result is > 9e9
+        // Use 16e9 to ensure cost = 16e9 * 0.6 = 9.6e9 > 9e9
+        uint256 largeAmount = 16 * 10**9;
         vm.prank(user1);
-        vm.expectRevert("Collateral transfer failed");
-        orderBook.createBuyOrder(marketId, outcome, USER_BALANCE + 1, maxPrice);
+        vm.expectRevert("ERC20: transfer amount exceeds balance"); // MockERC20 reverts with this message
+        orderBook.createBuyOrder(marketId, outcome, largeAmount, maxPrice);
     }
     
     function testCreateSellOrder() public {
@@ -330,11 +336,15 @@ contract OrderBookTest is Test {
         assertEq(conditionalTokens.getOutcomeBalance(marketId, user2, outcome), TOKEN_AMOUNT - amount);
         
         // Check collateral was exchanged
-        uint256 expectedCollateral = amount * sellPrice; // Use sell price (lower)
+        // The match price is determined by the order that was placed first (the maker)
+        // In this case, the buy order at 0.6 was placed first, so the match happens at 0.6
+        uint256 matchPrice = buyPrice; // Use buy price (the maker's price)
+        uint256 expectedCollateral = (amount * matchPrice) / 10**6; // Divide by price denominator
         uint256 fee = (expectedCollateral * 25) / 10000; // 0.25% fee
         uint256 netCollateral = expectedCollateral - fee;
         
-        assertEq(collateralToken.balanceOf(user2), USER_BALANCE + netCollateral);
+        // user2 started with USER_BALANCE, spent TOKEN_AMOUNT to mint tokens, and received netCollateral from the trade
+        assertEq(collateralToken.balanceOf(user2), USER_BALANCE - TOKEN_AMOUNT + netCollateral);
     }
     
     function testPartialOrderFill() public {
@@ -372,11 +382,11 @@ contract OrderBookTest is Test {
         uint256 amount = 100 * 10**6;
         uint256 maxPrice = 0.6 * 10**6;
         
+        uint256 balanceBeforeOrder = collateralToken.balanceOf(user1);
+        
         // Create buy order
         vm.prank(user1);
         uint256 orderId = orderBook.createBuyOrder(marketId, outcome, amount, maxPrice);
-        
-        uint256 initialBalance = collateralToken.balanceOf(user1);
         
         // Cancel order
         vm.prank(user1);
@@ -386,8 +396,8 @@ contract OrderBookTest is Test {
         OrderBook.Order memory order = orderBook.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderBook.OrderStatus.Cancelled));
         
-        // Check collateral was returned
-        assertEq(collateralToken.balanceOf(user1), initialBalance);
+        // Check collateral was returned (should be back to balance before order)
+        assertEq(collateralToken.balanceOf(user1), balanceBeforeOrder);
     }
     
     function testCancelOrderFails() public {
@@ -449,7 +459,9 @@ contract OrderBookTest is Test {
         orderBook.createSellOrder(marketId, outcome, amount, sellPrice);
         
         // Check trading fee was collected
-        uint256 expectedFee = (amount * sellPrice * 25) / 10000; // 0.25% fee
+        // The match price is the price of the order placed first (buy order at 0.6)
+        uint256 matchPrice = buyPrice;
+        uint256 expectedFee = ((amount * matchPrice) / 10**6 * 25) / 10000; // 0.25% fee, divide by price denominator first
         assertEq(collateralToken.balanceOf(address(orderBook)), expectedFee);
     }
     
