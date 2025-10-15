@@ -1,0 +1,6 @@
+[submodule "fluxoria-contract-main/lib/openzeppelin-contracts"]
+	path = fluxoria-contract-main/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "fluxoria-contract-main/lib/forge-std"]
+	path = fluxoria-contract-main/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std

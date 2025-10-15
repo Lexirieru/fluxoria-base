@@ -1,0 +1,21 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+via_ir = true
+remappings = [
+    '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',
+    'forge-std/=lib/forge-std/src/'
+]
+
+[rpc_endpoints]
+arb_sepolia = "https://sepolia-rollup.arbitrum.io/rpc"
+base_sepolia= "https://sepolia.base.org"
+arb_mainnet = "https://arb1.arbitrum.io/rpc"
+base_mainnet = "https://base.drpc.org"
+bsc_mainnet = "https://bsc.drpc.org"
+kaia_mainnet = "https://go.getblock.io/d7094dbd80ab474ba7042603fe912332"
+pol_mainnet = "https://polygon.drpc.org"
+gnosis_mainnet = "wss://gnosis-rpc.publicnode.com"
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
