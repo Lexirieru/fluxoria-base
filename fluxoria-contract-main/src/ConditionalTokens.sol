@@ -7,6 +7,36 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
+    // Custom errors
+    error EmptyQuestion();
+    error ResolutionTimeInPast();
+    error InsufficientOutcomes();
+    error MarketDoesNotExist();
+    error MarketNotActive();
+    error InvalidOutcome();
+    error AmountMustBePositive();
+    error CollateralNotSupported();
+    error CollateralTransferFailed();
+    error InsufficientTokenBalance();
+    error InsufficientBalance();
+    error MarketNotResolved();
+    error NotWinningOutcome();
+    error NoTokensToRedeem();
+    error CannotTransferToZeroAddress();
+    error CannotTransferFromZeroAddress();
+    error CannotApproveZeroAddress();
+    error InsufficientAllowance();
+    error InvalidCollateralAddress();
+    error CollateralAlreadySupported();
+    error CannotRemovePrimaryCollateral();
+    error MarketHasExistingCollateral();
+    error FeeTooHigh();
+    error InvalidRecipient();
+    error NoFeesToWithdraw();
+    error FeeWithdrawalFailed();
+    error MarketNotReadyForResolution();
+    error InvalidWinningOutcome();
+    
     // Market states
     enum MarketState { Active, Resolved, Cancelled }
     
@@ -109,9 +139,9 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         OutcomeType _outcomeType,
         string[] memory _outcomes
     ) external whenNotPaused returns (uint256 marketId) {
-        require(bytes(_question).length > 0, "Question cannot be empty");
-        require(_resolutionTime > block.timestamp, "Resolution time must be in future");
-        require(_outcomes.length >= 2, "Must have at least 2 outcomes");
+        if (bytes(_question).length == 0) revert EmptyQuestion();
+        if (_resolutionTime <= block.timestamp) revert ResolutionTimeInPast();
+        if (_outcomes.length < 2) revert InsufficientOutcomes();
         
         marketId = marketCount++;
         
@@ -145,11 +175,11 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _outcome,
         uint256 _amount
     ) external whenNotPaused nonReentrant {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         Market storage market = markets[_marketId];
-        require(market.state == MarketState.Active, "Market not active");
-        require(_outcome < market.outcomes.length, "Invalid outcome");
-        require(_amount > 0, "Amount must be positive");
+        if (market.state != MarketState.Active) revert MarketNotActive();
+        if (_outcome >= market.outcomes.length) revert InvalidOutcome();
+        if (_amount == 0) revert AmountMustBePositive();
         
         // Calculate fee
         uint256 fee = (_amount * mintFee) / FEE_DENOMINATOR;
@@ -157,13 +187,12 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         
         // Get market-specific collateral
         address marketCollateralToken = marketCollateral[_marketId];
-        require(supportedCollaterals[marketCollateralToken], "Collateral not supported");
+        if (!supportedCollaterals[marketCollateralToken]) revert CollateralNotSupported();
         
         // Transfer collateral + fee from user
-        require(
-            IERC20(marketCollateralToken).transferFrom(msg.sender, address(this), totalRequired),
-            "Collateral transfer failed"
-        );
+        if (!IERC20(marketCollateralToken).transferFrom(msg.sender, address(this), totalRequired)) {
+            revert CollateralTransferFailed();
+        }
         
         // Add fee to collected fees
         collectedFees += fee;
@@ -189,15 +218,14 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _outcome,
         uint256 _amount
     ) external whenNotPaused nonReentrant {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         Market storage market = markets[_marketId];
-        require(market.state == MarketState.Active, "Market not active");
-        require(_outcome < market.outcomes.length, "Invalid outcome");
-        require(_amount > 0, "Amount must be positive");
-        require(
-            outcomeBalances[_marketId][msg.sender][_outcome] >= _amount,
-            "Insufficient token balance"
-        );
+        if (market.state != MarketState.Active) revert MarketNotActive();
+        if (_outcome >= market.outcomes.length) revert InvalidOutcome();
+        if (_amount == 0) revert AmountMustBePositive();
+        if (outcomeBalances[_marketId][msg.sender][_outcome] < _amount) {
+            revert InsufficientTokenBalance();
+        }
         
         // Get market-specific collateral
         address marketCollateralToken = marketCollateral[_marketId];
@@ -207,10 +235,9 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         market.totalCollateral -= _amount;
         
         // Return collateral to user
-        require(
-            IERC20(marketCollateralToken).transfer(msg.sender, _amount),
-            "Collateral transfer failed"
-        );
+        if (!IERC20(marketCollateralToken).transfer(msg.sender, _amount)) {
+            revert CollateralTransferFailed();
+        }
         
         emit TokensBurned(_marketId, msg.sender, _outcome, _amount);
     }
@@ -224,11 +251,11 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _marketId,
         uint256 _winningOutcome
     ) external onlyOwner {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         Market storage market = markets[_marketId];
-        require(market.state == MarketState.Active, "Market not active");
-        require(block.timestamp >= market.resolutionTime, "Market not ready for resolution");
-        require(_winningOutcome < market.outcomes.length, "Invalid winning outcome");
+        if (market.state != MarketState.Active) revert MarketNotActive();
+        if (block.timestamp < market.resolutionTime) revert MarketNotReadyForResolution();
+        if (_winningOutcome >= market.outcomes.length) revert InvalidWinningOutcome();
         
         market.state = MarketState.Resolved;
         market.winningOutcome = _winningOutcome;
@@ -246,22 +273,21 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _marketId,
         uint256 _outcome
     ) external {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         Market storage market = markets[_marketId];
-        require(market.state == MarketState.Resolved, "Market not resolved");
-        require(_outcome == market.winningOutcome, "Not the winning outcome");
+        if (market.state != MarketState.Resolved) revert MarketNotResolved();
+        if (_outcome != market.winningOutcome) revert NotWinningOutcome();
         
         uint256 amount = outcomeBalances[_marketId][msg.sender][_outcome];
-        require(amount > 0, "No tokens to redeem");
+        if (amount == 0) revert NoTokensToRedeem();
         
         // Clear the balance
         outcomeBalances[_marketId][msg.sender][_outcome] = 0;
         
         // Transfer collateral to user
-        require(
-            collateralToken.transfer(msg.sender, amount),
-            "Collateral transfer failed"
-        );
+        if (!collateralToken.transfer(msg.sender, amount)) {
+            revert CollateralTransferFailed();
+        }
         
         emit TokensRedeemed(_marketId, msg.sender, amount, _outcome);
     }
@@ -293,13 +319,12 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _outcome,
         uint256 _amount
     ) external whenNotPaused {
-        require(_marketId < marketCount, "Market does not exist");
-        require(_to != address(0), "Cannot transfer to zero address");
-        require(_amount > 0, "Amount must be positive");
-        require(
-            outcomeBalances[_marketId][msg.sender][_outcome] >= _amount,
-            "Insufficient balance"
-        );
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (_to == address(0)) revert CannotTransferToZeroAddress();
+        if (_amount == 0) revert AmountMustBePositive();
+        if (outcomeBalances[_marketId][msg.sender][_outcome] < _amount) {
+            revert InsufficientBalance();
+        }
         
         outcomeBalances[_marketId][msg.sender][_outcome] -= _amount;
         outcomeBalances[_marketId][_to][_outcome] += _amount;
@@ -322,19 +347,18 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _outcome,
         uint256 _amount
     ) external whenNotPaused {
-        require(_marketId < marketCount, "Market does not exist");
-        require(_from != address(0), "Cannot transfer from zero address");
-        require(_to != address(0), "Cannot transfer to zero address");
-        require(_amount > 0, "Amount must be positive");
-        require(
-            outcomeBalances[_marketId][_from][_outcome] >= _amount,
-            "Insufficient balance"
-        );
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (_from == address(0)) revert CannotTransferFromZeroAddress();
+        if (_to == address(0)) revert CannotTransferToZeroAddress();
+        if (_amount == 0) revert AmountMustBePositive();
+        if (outcomeBalances[_marketId][_from][_outcome] < _amount) {
+            revert InsufficientBalance();
+        }
         
         // Check and update allowance if not transferring own tokens
         if (msg.sender != _from) {
             uint256 currentAllowance = outcomeAllowances[_marketId][_from][msg.sender][_outcome];
-            require(currentAllowance >= _amount, "Insufficient allowance");
+            if (currentAllowance < _amount) revert InsufficientAllowance();
             if (currentAllowance != type(uint256).max) {
                 outcomeAllowances[_marketId][_from][msg.sender][_outcome] = currentAllowance - _amount;
             }
@@ -359,7 +383,7 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
         uint256 _outcome,
         uint256 _amount
     ) external {
-        require(_spender != address(0), "Cannot approve zero address");
+        if (_spender == address(0)) revert CannotApproveZeroAddress();
         outcomeAllowances[_marketId][msg.sender][_spender][_outcome] = _amount;
         emit Approval(msg.sender, _spender, _amount);
     }
@@ -385,7 +409,7 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @param _marketId The market ID
      */
     function getMarket(uint256 _marketId) external view returns (Market memory) {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         return markets[_marketId];
     }
     
@@ -394,7 +418,7 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @param _marketId The market ID
      */
     function getMarketOutcomes(uint256 _marketId) external view returns (string[] memory) {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         return markets[_marketId].outcomes;
     }
     
@@ -403,7 +427,7 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @param _marketId The market ID
      */
     function isMarketActive(uint256 _marketId) external view returns (bool) {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         return markets[_marketId].state == MarketState.Active;
     }
     
@@ -420,8 +444,8 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @dev Add support for a new collateral token (only owner)
      */
     function addCollateral(address _collateral) external onlyOwner {
-        require(_collateral != address(0), "Invalid collateral address");
-        require(!supportedCollaterals[_collateral], "Collateral already supported");
+        if (_collateral == address(0)) revert InvalidCollateralAddress();
+        if (supportedCollaterals[_collateral]) revert CollateralAlreadySupported();
         
         supportedCollaterals[_collateral] = true;
         emit CollateralAdded(_collateral);
@@ -431,8 +455,8 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @dev Remove support for a collateral token (only owner)
      */
     function removeCollateral(address _collateral) external onlyOwner {
-        require(_collateral != address(collateralToken), "Cannot remove primary collateral");
-        require(supportedCollaterals[_collateral], "Collateral not supported");
+        if (_collateral == address(collateralToken)) revert CannotRemovePrimaryCollateral();
+        if (!supportedCollaterals[_collateral]) revert CollateralNotSupported();
         
         supportedCollaterals[_collateral] = false;
         emit CollateralRemoved(_collateral);
@@ -442,9 +466,9 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @dev Set collateral for a specific market (only owner)
      */
     function setMarketCollateral(uint256 _marketId, address _collateral) external onlyOwner {
-        require(_marketId < marketCount, "Market does not exist");
-        require(supportedCollaterals[_collateral], "Collateral not supported");
-        require(markets[_marketId].totalCollateral == 0, "Market has existing collateral");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (!supportedCollaterals[_collateral]) revert CollateralNotSupported();
+        if (markets[_marketId].totalCollateral != 0) revert MarketHasExistingCollateral();
         
         marketCollateral[_marketId] = _collateral;
     }
@@ -453,7 +477,7 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @dev Update mint fee (only owner)
      */
     function setMintFee(uint256 _newFee) external onlyOwner {
-        require(_newFee <= 100, "Fee too high"); // Max 1%
+        if (_newFee > 100) revert FeeTooHigh(); // Max 1%
         uint256 oldFee = mintFee;
         mintFee = _newFee;
         emit MintFeeUpdated(oldFee, _newFee);
@@ -463,16 +487,15 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @dev Withdraw collected fees (only owner)
      */
     function withdrawFees(address _recipient) external onlyOwner {
-        require(_recipient != address(0), "Invalid recipient");
-        require(collectedFees > 0, "No fees to withdraw");
+        if (_recipient == address(0)) revert InvalidRecipient();
+        if (collectedFees == 0) revert NoFeesToWithdraw();
         
         uint256 amount = collectedFees;
         collectedFees = 0;
         
-        require(
-            collateralToken.transfer(_recipient, amount),
-            "Fee withdrawal failed"
-        );
+        if (!collateralToken.transfer(_recipient, amount)) {
+            revert FeeWithdrawalFailed();
+        }
     }
     
     /**
@@ -509,7 +532,7 @@ contract ConditionalTokens is ERC20, Ownable, Pausable, ReentrancyGuard {
      * @dev Get market collateral token
      */
     function getMarketCollateral(uint256 _marketId) external view returns (address) {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         return marketCollateral[_marketId];
     }
 }

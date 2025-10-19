@@ -9,6 +9,41 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
+    // Custom errors
+    error InvalidSide();
+    error MarketDoesNotExist();
+    error MarketNotActive();
+    error CloseExistingPositionFirst();
+    error InvalidLeverage();
+    error SizeMustBePositive();
+    error PositionSizeTooSmall();
+    error CollateralTransferFailed();
+    error NoOpenPosition();
+    error MarketNotResolved();
+    error NoTokensToRedeem();
+    error InvalidPercentage();
+    error PositionWouldBeLiquidated();
+    error RemainingCollateralTransferFailed();
+    error NotOrderOwner();
+    error OrderNotActive();
+    error NotEligibleForLiquidation();
+    error PositionAlreadyLiquidated();
+    error InvalidThreshold();
+    error InvalidPenalty();
+    error FeeTooHigh();
+    error AmountMustBePositive();
+    error InsufficientInsuranceFund();
+    error InsuranceFundWithdrawalFailed();
+    error InvalidPositionSize();
+    error InvalidWarningThreshold();
+    error PriceMustBePositive();
+    error MarketNotReadyForResolution();
+    error InsufficientTokenBalance();
+    error InvalidWinningOutcome();
+    error ArrayLengthMismatch();
+    error InsufficientBalance();
+    error FeeTransferFailed();
+    
     enum PositionSide { None, Long, Short }
     enum MarketState { Active, Resolved, Cancelled }
 
@@ -208,13 +243,13 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256 _marketId,
         uint256 _outcome
     ) external whenNotPaused nonReentrant {
-        require(_side == PositionSide.Long || _side == PositionSide.Short, "Invalid side");
-        require(_marketId < marketCount, "Market does not exist");
-        require(markets[_marketId].state == MarketState.Active, "Market not active");
-        require(userPositions[msg.sender].side == PositionSide.None, "Close existing position first");
-        require(_leverage > 0 && _leverage <= 10, "Invalid leverage");
-        require(_size > 0, "Size must be positive");
-        require(_size >= minPositionSize, "Position size too small");
+        if (_side != PositionSide.Long && _side != PositionSide.Short) revert InvalidSide();
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (markets[_marketId].state != MarketState.Active) revert MarketNotActive();
+        if (userPositions[msg.sender].side != PositionSide.None) revert CloseExistingPositionFirst();
+        if (_leverage == 0 || _leverage > 10) revert InvalidLeverage();
+        if (_size == 0) revert SizeMustBePositive();
+        if (_size < minPositionSize) revert PositionSizeTooSmall();
         
         Market storage market = markets[_marketId];
         uint256 collateral = _size / _leverage;
@@ -224,10 +259,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256 totalRequired = collateral + insuranceFee;
         
         // Transfer collateral + insurance fee from user
-        require(
-            collateralToken.transferFrom(msg.sender, address(this), totalRequired),
-            "Collateral transfer failed"
-        );
+        if (!collateralToken.transferFrom(msg.sender, address(this), totalRequired)) {
+            revert CollateralTransferFailed();
+        }
         
         // Add insurance fee to fund
         insuranceFund += insuranceFee;
@@ -272,10 +306,10 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      */
     function closePosition() external whenNotPaused nonReentrant {
         Position storage pos = userPositions[msg.sender];
-        require(pos.side != PositionSide.None, "No open position");
+        if (pos.side == PositionSide.None) revert NoOpenPosition();
         
         Market storage market = markets[pos.marketId];
-        require(market.state == MarketState.Active, "Market not active");
+        if (market.state != MarketState.Active) revert MarketNotActive();
         
         (uint256 pnl, uint256 finalCollateral, bool wasLiquidated) = _calculatePositionValue(pos, market);
         
@@ -303,10 +337,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
             }
             
             if (amountToTransfer > 0) {
-                require(
-                    collateralToken.transfer(msg.sender, amountToTransfer),
-                    "Collateral transfer failed"
-                );
+                if (!collateralToken.transfer(msg.sender, amountToTransfer)) {
+                    revert CollateralTransferFailed();
+                }
             }
         }
         
@@ -321,12 +354,12 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @param _percentage Percentage of position to close (1-100)
      */
     function closePartialPosition(uint256 _percentage) external whenNotPaused nonReentrant {
-        require(_percentage > 0 && _percentage < 100, "Invalid percentage");
+        if (_percentage == 0 || _percentage >= 100) revert InvalidPercentage();
         Position storage pos = userPositions[msg.sender];
-        require(pos.side != PositionSide.None, "No open position");
+        if (pos.side == PositionSide.None) revert NoOpenPosition();
         
         Market storage market = markets[pos.marketId];
-        require(market.state == MarketState.Active, "Market not active");
+        if (market.state != MarketState.Active) revert MarketNotActive();
         
         // Calculate partial amounts
         uint256 partialSize = (pos.size * _percentage) / 100;
@@ -345,7 +378,7 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         
         (uint256 pnl, uint256 finalCollateral, bool wasLiquidated) = _calculatePositionValue(tempPos, market);
         
-        require(!wasLiquidated, "Position would be liquidated");
+        if (wasLiquidated) revert PositionWouldBeLiquidated();
         
         // Burn partial conditional tokens
         conditionalTokens.burnTokens(pos.marketId, pos.outcome, partialCollateral);
@@ -362,10 +395,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
             }
             
             if (amountToTransfer > 0) {
-                require(
-                    collateralToken.transfer(msg.sender, amountToTransfer),
-                    "Collateral transfer failed"
-                );
+                if (!collateralToken.transfer(msg.sender, amountToTransfer)) {
+                    revert CollateralTransferFailed();
+                }
             }
         }
         
@@ -380,10 +412,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
                 conditionalTokens.burnTokens(pos.marketId, pos.outcome, pos.collateral);
                 userOutcomeBalances[msg.sender][pos.outcome] -= pos.collateral;
                 
-                require(
-                    collateralToken.transfer(msg.sender, pos.collateral),
-                    "Remaining collateral transfer failed"
-                );
+                if (!collateralToken.transfer(msg.sender, pos.collateral)) {
+                    revert RemainingCollateralTransferFailed();
+                }
             }
             
             emit PositionClosed(msg.sender, pnl, finalCollateral + pos.collateral, pos.marketId);
@@ -399,14 +430,14 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      */
     function liquidatePosition(address user) external whenNotPaused nonReentrant {
         Position storage pos = userPositions[user];
-        require(pos.side != PositionSide.None, "No open position");
-        require(!liquidatedUsers[user], "Position already liquidated");
+        if (pos.side == PositionSide.None) revert NoOpenPosition();
+        if (liquidatedUsers[user]) revert PositionAlreadyLiquidated();
         
         Market storage market = markets[pos.marketId];
-        require(market.state == MarketState.Active, "Market not active");
+        if (market.state != MarketState.Active) revert MarketNotActive();
         
         // Check if position should be liquidated
-        require(_shouldLiquidate(pos, market), "Position not eligible for liquidation");
+        if (!_shouldLiquidate(pos, market)) revert NotEligibleForLiquidation();
         
         (uint256 pnl, uint256 finalCollateral, bool wasLiquidated) = _calculatePositionValue(pos, market);
         
@@ -429,10 +460,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
             }
             
             if (amountToTransfer > 0) {
-                require(
-                    collateralToken.transfer(user, amountToTransfer),
-                    "Collateral transfer failed"
-                );
+                if (!collateralToken.transfer(user, amountToTransfer)) {
+                    revert CollateralTransferFailed();
+                }
             }
         }
         
@@ -537,9 +567,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Update market price (oracle integration)
      */
     function updatePrice(uint256 _marketId, uint256 newPrice) external onlyOwner {
-        require(_marketId < marketCount, "Market does not exist");
-        require(markets[_marketId].state == MarketState.Active, "Market not active");
-        require(newPrice > 0, "Price must be positive");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (markets[_marketId].state != MarketState.Active) revert MarketNotActive();
+        if (newPrice == 0) revert PriceMustBePositive();
         
         markets[_marketId].currentPrice = newPrice;
     }
@@ -548,10 +578,10 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Resolve a market
      */
     function resolveMarket(uint256 _marketId, uint256 finalPrice) external onlyOwner {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         Market storage market = markets[_marketId];
-        require(market.state == MarketState.Active, "Market not active");
-        require(block.timestamp >= market.resolutionTime, "Market not ready for resolution");
+        if (market.state != MarketState.Active) revert MarketNotActive();
+        if (block.timestamp < market.resolutionTime) revert MarketNotReadyForResolution();
         
         market.state = MarketState.Resolved;
         market.currentPrice = finalPrice;
@@ -572,24 +602,22 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256 _amount,
         bool _isBuy
     ) external {
-        require(_marketId < marketCount, "Market does not exist");
-        require(markets[_marketId].state == MarketState.Active, "Market not active");
-        require(_amount > 0, "Amount must be positive");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (markets[_marketId].state != MarketState.Active) revert MarketNotActive();
+        if (_amount == 0) revert AmountMustBePositive();
         
         if (_isBuy) {
             // Buy tokens
-            require(
-                collateralToken.transferFrom(msg.sender, address(this), _amount),
-                "Collateral transfer failed"
-            );
+            if (!collateralToken.transferFrom(msg.sender, address(this), _amount)) {
+                revert CollateralTransferFailed();
+            }
             conditionalTokens.mintTokens(_marketId, _outcome, _amount);
             userOutcomeBalances[msg.sender][_outcome] += _amount;
         } else {
             // Sell tokens
-            require(
-                userOutcomeBalances[msg.sender][_outcome] >= _amount,
-                "Insufficient token balance"
-            );
+            if (userOutcomeBalances[msg.sender][_outcome] < _amount) {
+                revert InsufficientTokenBalance();
+            }
             conditionalTokens.burnTokens(_marketId, _outcome, _amount);
             userOutcomeBalances[msg.sender][_outcome] -= _amount;
         }
@@ -603,11 +631,11 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @param _outcome The outcome to redeem
      */
     function redeemTokens(uint256 _marketId, uint256 _outcome) external {
-        require(_marketId < marketCount, "Market does not exist");
-        require(markets[_marketId].state == MarketState.Resolved, "Market not resolved");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (markets[_marketId].state != MarketState.Resolved) revert MarketNotResolved();
         
         uint256 amount = userOutcomeBalances[msg.sender][_outcome];
-        require(amount > 0, "No tokens to redeem");
+        if (amount == 0) revert NoTokensToRedeem();
         
         // Clear user's balance
         userOutcomeBalances[msg.sender][_outcome] = 0;
@@ -619,17 +647,16 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         
         // Transfer collateral to user
         // The collateral is now in Fluxoria's balance after redeeming from ConditionalTokens
-        require(
-            collateralToken.transfer(msg.sender, amount),
-            "Collateral transfer failed"
-        );
+        if (!collateralToken.transfer(msg.sender, amount)) {
+            revert CollateralTransferFailed();
+        }
     }
 
     /**
      * @dev Get market information
      */
     function getMarket(uint256 _marketId) external view returns (Market memory) {
-        require(_marketId < marketCount, "Market does not exist");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
         return markets[_marketId];
     }
 
@@ -644,7 +671,7 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Update liquidation threshold (only owner)
      */
     function setLiquidationThreshold(uint256 _newThreshold) external onlyOwner {
-        require(_newThreshold > 0 && _newThreshold <= 100, "Invalid threshold");
+        if (_newThreshold == 0 || _newThreshold > 100) revert InvalidThreshold();
         uint256 oldThreshold = liquidationThreshold;
         liquidationThreshold = _newThreshold;
         emit LiquidationThresholdUpdated(oldThreshold, _newThreshold);
@@ -654,7 +681,7 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Update liquidation penalty (only owner)
      */
     function setLiquidationPenalty(uint256 _newPenalty) external onlyOwner {
-        require(_newPenalty <= 20, "Penalty too high"); // Max 20%
+        if (_newPenalty > 20) revert InvalidPenalty(); // Max 20%
         uint256 oldPenalty = liquidationPenalty;
         liquidationPenalty = _newPenalty;
         emit LiquidationPenaltyUpdated(oldPenalty, _newPenalty);
@@ -664,7 +691,7 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Update insurance fund fee (only owner)
      */
     function setInsuranceFundFee(uint256 _newFee) external onlyOwner {
-        require(_newFee <= 100, "Fee too high"); // Max 1%
+        if (_newFee > 100) revert FeeTooHigh(); // Max 1%
         uint256 oldFee = insuranceFundFee;
         insuranceFundFee = _newFee;
         emit InsuranceFundFeeUpdated(oldFee, _newFee);
@@ -674,14 +701,13 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Withdraw from insurance fund (only owner)
      */
     function withdrawInsuranceFund(uint256 _amount) external onlyOwner {
-        require(_amount > 0, "Amount must be positive");
-        require(_amount <= insuranceFund, "Insufficient insurance fund");
+        if (_amount == 0) revert AmountMustBePositive();
+        if (_amount > insuranceFund) revert InsufficientInsuranceFund();
         
         insuranceFund -= _amount;
-        require(
-            collateralToken.transfer(owner(), _amount),
-            "Insurance fund withdrawal failed"
-        );
+        if (!collateralToken.transfer(owner(), _amount)) {
+            revert InsuranceFundWithdrawalFailed();
+        }
         
         emit InsuranceFundWithdraw(_amount, insuranceFund);
     }
@@ -690,7 +716,7 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Update minimum position size (only owner)
      */
     function setMinPositionSize(uint256 _newSize) external onlyOwner {
-        require(_newSize > 0, "Size must be positive");
+        if (_newSize == 0) revert InvalidPositionSize();
         uint256 oldSize = minPositionSize;
         minPositionSize = _newSize;
         emit MinPositionSizeUpdated(oldSize, _newSize);
@@ -700,7 +726,7 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
      * @dev Update warning threshold (only owner)
      */
     function setWarningThreshold(uint256 _newThreshold) external onlyOwner {
-        require(_newThreshold > liquidationThreshold && _newThreshold <= 100, "Invalid threshold");
+        if (_newThreshold <= liquidationThreshold || _newThreshold > 100) revert InvalidWarningThreshold();
         uint256 oldThreshold = warningThreshold;
         warningThreshold = _newThreshold;
         emit WarningThresholdUpdated(oldThreshold, _newThreshold);
@@ -754,15 +780,14 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256 _amount,
         uint256 _maxPrice
     ) external returns (uint256 orderId) {
-        require(_marketId < marketCount, "Market does not exist");
-        require(markets[_marketId].state == MarketState.Active, "Market not active");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (markets[_marketId].state != MarketState.Active) revert MarketNotActive();
         
         // Transfer collateral from user to this contract
         uint256 totalCost = (_amount * _maxPrice) / 10**6; // Price denominator
-        require(
-            collateralToken.transferFrom(msg.sender, address(this), totalCost),
-            "Collateral transfer failed"
-        );
+        if (!collateralToken.transferFrom(msg.sender, address(this), totalCost)) {
+            revert CollateralTransferFailed();
+        }
         
         // Approve OrderBook to spend the collateral
         collateralToken.approve(address(orderBook), totalCost);
@@ -782,11 +807,13 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256 _amount,
         uint256 _minPrice
     ) external returns (uint256 orderId) {
-        require(_marketId < marketCount, "Market does not exist");
-        require(markets[_marketId].state == MarketState.Active, "Market not active");
+        if (_marketId >= marketCount) revert MarketDoesNotExist();
+        if (markets[_marketId].state != MarketState.Active) revert MarketNotActive();
         
         // Check user has enough tokens in their tracked balance
-        require(userOutcomeBalances[msg.sender][_outcome] >= _amount, "Insufficient balance");
+        if (userOutcomeBalances[msg.sender][_outcome] < _amount) {
+            revert InsufficientBalance();
+        }
         
         // Decrease user's tracked balance
         userOutcomeBalances[msg.sender][_outcome] -= _amount;
@@ -840,10 +867,9 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256 fees = balanceAfter - balanceBefore;
         
         if (fees > 0) {
-            require(
-                collateralToken.transfer(owner(), fees),
-                "Fee transfer failed"
-            );
+            if (!collateralToken.transfer(owner(), fees)) {
+                revert FeeTransferFailed();
+            }
         }
     }
     
@@ -905,12 +931,12 @@ contract Fluxoria is Ownable, Pausable, ReentrancyGuard {
         uint256[] calldata _marketIds,
         uint256[] calldata _prices
     ) external onlyOwner {
-        require(_marketIds.length == _prices.length, "Array length mismatch");
+        if (_marketIds.length != _prices.length) revert ArrayLengthMismatch();
         
         for (uint256 i = 0; i < _marketIds.length; i++) {
-            require(_marketIds[i] < marketCount, "Market does not exist");
-            require(markets[_marketIds[i]].state == MarketState.Active, "Market not active");
-            require(_prices[i] > 0, "Price must be positive");
+            if (_marketIds[i] >= marketCount) revert MarketDoesNotExist();
+            if (markets[_marketIds[i]].state != MarketState.Active) revert MarketNotActive();
+            if (_prices[i] == 0) revert PriceMustBePositive();
             
             markets[_marketIds[i]].currentPrice = _prices[i];
         }

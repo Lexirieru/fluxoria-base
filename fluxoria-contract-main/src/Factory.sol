@@ -10,6 +10,30 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract Factory is Ownable, Pausable, ReentrancyGuard {
+    // Custom errors
+    error InvalidCollateralToken();
+    error NotWhitelisted();
+    error QuestionCannotBeEmpty();
+    error DescriptionCannotBeEmpty();
+    error MustHaveAtLeast2Outcomes();
+    error ResolutionTimeMustBeInFuture();
+    error MarketDurationTooShort();
+    error MarketDurationTooLong();
+    error MarketCreationFeeTransferFailed();
+    error NoFeesToWithdraw();
+    error FeeWithdrawalFailed();
+    error InvalidCollateralAddress();
+    error CollateralAlreadySupported();
+    error CannotRemovePrimaryCollateral();
+    error CollateralNotSupported();
+    error InvalidCreatorAddress();
+    error AlreadyWhitelisted();
+    error NotWhitelistedCreator();
+    error NotAValidMarket();
+    error DurationMustBePositive();
+    error MinMustBeLessThanMax();
+    error MaxMustBeGreaterThanMin();
+    
     address[] public allMarkets;
     mapping(address => bool) public isMarket;
     mapping(address => address) public marketToConditionalTokens;
@@ -63,7 +87,7 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
     event FactoryUnpaused(address indexed by);
     
     constructor(address _collateralToken) Ownable(msg.sender) {
-        require(_collateralToken != address(0), "Invalid collateral token");
+        if (_collateralToken == address(0)) revert InvalidCollateralToken();
         COLLATERAL_TOKEN = _collateralToken;
         supportedCollaterals[_collateralToken] = true;
     }
@@ -83,25 +107,24 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
     ) external whenNotPaused nonReentrant returns (address market, address conditionalTokensContract) {
         // Check whitelist if enabled
         if (whitelistEnabled) {
-            require(whitelistedCreators[msg.sender], "Not whitelisted");
+            if (!whitelistedCreators[msg.sender]) revert NotWhitelisted();
         }
         
-        require(_name.length > 0, "Question cannot be empty");
-        require(_symbol.length > 0, "Description cannot be empty");
-        require(_outcomes.length >= 2, "Must have at least 2 outcomes");
-        require(_expiredTime > block.timestamp, "Resolution time must be in future");
+        if (_name.length == 0) revert QuestionCannotBeEmpty();
+        if (_symbol.length == 0) revert DescriptionCannotBeEmpty();
+        if (_outcomes.length < 2) revert MustHaveAtLeast2Outcomes();
+        if (_expiredTime <= block.timestamp) revert ResolutionTimeMustBeInFuture();
         
         // Validate market duration
         uint256 duration = _expiredTime - block.timestamp;
-        require(duration >= minMarketDuration, "Market duration too short");
-        require(duration <= maxMarketDuration, "Market duration too long");
+        if (duration < minMarketDuration) revert MarketDurationTooShort();
+        if (duration > maxMarketDuration) revert MarketDurationTooLong();
         
         // Collect market creation fee
         if (marketCreationFee > 0) {
-            require(
-                IERC20(COLLATERAL_TOKEN).transferFrom(msg.sender, address(this), marketCreationFee),
-                "Market creation fee transfer failed"
-            );
+            if (!IERC20(COLLATERAL_TOKEN).transferFrom(msg.sender, address(this), marketCreationFee)) {
+                revert MarketCreationFeeTransferFailed();
+            }
         }
         
         // Deploy new Fluxoria market contract
@@ -154,25 +177,24 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
     ) external whenNotPaused nonReentrant returns (address market, address conditionalTokensContract) {
         // Check whitelist if enabled
         if (whitelistEnabled) {
-            require(whitelistedCreators[msg.sender], "Not whitelisted");
+            if (!whitelistedCreators[msg.sender]) revert NotWhitelisted();
         }
         
-        require(bytes(_question).length > 0, "Question cannot be empty");
-        require(bytes(_description).length > 0, "Description cannot be empty");
-        require(_outcomes.length >= 2, "Must have at least 2 outcomes");
-        require(_expiredTime > block.timestamp, "Resolution time must be in future");
+        if (bytes(_question).length == 0) revert QuestionCannotBeEmpty();
+        if (bytes(_description).length == 0) revert DescriptionCannotBeEmpty();
+        if (_outcomes.length < 2) revert MustHaveAtLeast2Outcomes();
+        if (_expiredTime <= block.timestamp) revert ResolutionTimeMustBeInFuture();
         
         // Validate market duration
         uint256 duration = _expiredTime - block.timestamp;
-        require(duration >= minMarketDuration, "Market duration too short");
-        require(duration <= maxMarketDuration, "Market duration too long");
+        if (duration < minMarketDuration) revert MarketDurationTooShort();
+        if (duration > maxMarketDuration) revert MarketDurationTooLong();
         
         // Collect market creation fee
         if (marketCreationFee > 0) {
-            require(
-                IERC20(COLLATERAL_TOKEN).transferFrom(msg.sender, address(this), marketCreationFee),
-                "Market creation fee transfer failed"
-            );
+            if (!IERC20(COLLATERAL_TOKEN).transferFrom(msg.sender, address(this), marketCreationFee)) {
+                revert MarketCreationFeeTransferFailed();
+            }
         }
         
         // Deploy conditional tokens contract first
@@ -279,11 +301,10 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      */
     function withdrawFees() external onlyOwner {
         uint256 balance = IERC20(COLLATERAL_TOKEN).balanceOf(address(this));
-        require(balance > 0, "No fees to withdraw");
-        require(
-            IERC20(COLLATERAL_TOKEN).transfer(owner(), balance),
-            "Fee withdrawal failed"
-        );
+        if (balance == 0) revert NoFeesToWithdraw();
+        if (!IERC20(COLLATERAL_TOKEN).transfer(owner(), balance)) {
+            revert FeeWithdrawalFailed();
+        }
     }
     
     /**
@@ -299,8 +320,8 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Add support for a new collateral token (only owner)
      */
     function addCollateral(address _collateral) external onlyOwner {
-        require(_collateral != address(0), "Invalid collateral address");
-        require(!supportedCollaterals[_collateral], "Collateral already supported");
+        if (_collateral == address(0)) revert InvalidCollateralAddress();
+        if (supportedCollaterals[_collateral]) revert CollateralAlreadySupported();
         
         supportedCollaterals[_collateral] = true;
         emit CollateralAdded(_collateral);
@@ -310,8 +331,8 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Remove support for a collateral token (only owner)
      */
     function removeCollateral(address _collateral) external onlyOwner {
-        require(_collateral != COLLATERAL_TOKEN, "Cannot remove primary collateral");
-        require(supportedCollaterals[_collateral], "Collateral not supported");
+        if (_collateral == COLLATERAL_TOKEN) revert CannotRemovePrimaryCollateral();
+        if (!supportedCollaterals[_collateral]) revert CollateralNotSupported();
         
         supportedCollaterals[_collateral] = false;
         emit CollateralRemoved(_collateral);
@@ -338,8 +359,8 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Add creator to whitelist (only owner)
      */
     function addToWhitelist(address _creator) external onlyOwner {
-        require(_creator != address(0), "Invalid creator address");
-        require(!whitelistedCreators[_creator], "Already whitelisted");
+        if (_creator == address(0)) revert InvalidCreatorAddress();
+        if (whitelistedCreators[_creator]) revert AlreadyWhitelisted();
         
         whitelistedCreators[_creator] = true;
         emit CreatorWhitelisted(_creator);
@@ -349,7 +370,7 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Remove creator from whitelist (only owner)
      */
     function removeFromWhitelist(address _creator) external onlyOwner {
-        require(whitelistedCreators[_creator], "Not whitelisted");
+        if (!whitelistedCreators[_creator]) revert NotWhitelistedCreator();
         
         whitelistedCreators[_creator] = false;
         emit CreatorRemovedFromWhitelist(_creator);
@@ -373,7 +394,7 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Set category for a market (only owner)
      */
     function setMarketCategory(address _market, string calldata _category) external onlyOwner {
-        require(isMarket[_market], "Not a valid market");
+        if (!isMarket[_market]) revert NotAValidMarket();
         
         marketCategory[_market] = _category;
         categoryMarkets[_category].push(_market);
@@ -385,7 +406,7 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Set tags for a market (only owner)
      */
     function setMarketTags(address _market, string[] calldata _tags) external onlyOwner {
-        require(isMarket[_market], "Not a valid market");
+        if (!isMarket[_market]) revert NotAValidMarket();
         
         marketTags[_market] = _tags;
         
@@ -412,8 +433,8 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Update minimum market duration (only owner)
      */
     function setMinMarketDuration(uint256 _newDuration) external onlyOwner {
-        require(_newDuration > 0, "Duration must be positive");
-        require(_newDuration < maxMarketDuration, "Min must be less than max");
+        if (_newDuration == 0) revert DurationMustBePositive();
+        if (_newDuration >= maxMarketDuration) revert MinMustBeLessThanMax();
         
         uint256 oldDuration = minMarketDuration;
         minMarketDuration = _newDuration;
@@ -425,7 +446,7 @@ contract Factory is Ownable, Pausable, ReentrancyGuard {
      * @dev Update maximum market duration (only owner)
      */
     function setMaxMarketDuration(uint256 _newDuration) external onlyOwner {
-        require(_newDuration > minMarketDuration, "Max must be greater than min");
+        if (_newDuration <= minMarketDuration) revert MaxMustBeGreaterThanMin();
         
         uint256 oldDuration = maxMarketDuration;
         maxMarketDuration = _newDuration;

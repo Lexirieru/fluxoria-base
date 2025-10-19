@@ -8,6 +8,19 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract OrderBook is Ownable, Pausable, ReentrancyGuard {
+    // Custom errors
+    error AmountMustBePositive();
+    error PriceMustBePositive();
+    error CollateralTransferFailed();
+    error InsufficientTokenBalance();
+    error OrderNotActive();
+    error NotOrderOwner();
+    error OrderNotActiveOrPartiallyFilled();
+    error CollateralReturnFailed();
+    error FeeTooHigh();
+    error NoFeesToWithdraw();
+    error FeeWithdrawalFailed();
+    
     enum OrderType { Buy, Sell }
     enum OrderStatus { Active, Filled, Cancelled, PartiallyFilled }
     
@@ -90,16 +103,15 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         uint256 _amount,
         uint256 _maxPrice
     ) external whenNotPaused nonReentrant returns (uint256 orderId) {
-        require(_amount > 0, "Amount must be positive");
-        require(_maxPrice > 0, "Price must be positive");
+        if (_amount == 0) revert AmountMustBePositive();
+        if (_maxPrice == 0) revert PriceMustBePositive();
         
         // Transfer collateral from user
         // Price is per token in units of 10^6, so we divide by PRICE_DENOMINATOR
         uint256 totalCost = (_amount * _maxPrice) / PRICE_DENOMINATOR;
-        require(
-            collateralToken.transferFrom(msg.sender, address(this), totalCost),
-            "Collateral transfer failed"
-        );
+        if (!collateralToken.transferFrom(msg.sender, address(this), totalCost)) {
+            revert CollateralTransferFailed();
+        }
         
         orderId = _createOrder(
             msg.sender,
@@ -128,14 +140,13 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
         uint256 _amount,
         uint256 _minPrice
     ) external whenNotPaused nonReentrant returns (uint256 orderId) {
-        require(_amount > 0, "Amount must be positive");
-        require(_minPrice > 0, "Price must be positive");
+        if (_amount == 0) revert AmountMustBePositive();
+        if (_minPrice == 0) revert PriceMustBePositive();
         
         // Check user has enough tokens
-        require(
-            conditionalTokens.getOutcomeBalance(_marketId, msg.sender, _outcome) >= _amount,
-            "Insufficient token balance"
-        );
+        if (conditionalTokens.getOutcomeBalance(_marketId, msg.sender, _outcome) < _amount) {
+            revert InsufficientTokenBalance();
+        }
         
         // Transfer tokens from user using outcome-specific transfer
         conditionalTokens.transferOutcomeTokensFrom(_marketId, msg.sender, address(this), _outcome, _amount);
@@ -163,9 +174,11 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
      */
     function cancelOrder(uint256 _orderId) external whenNotPaused nonReentrant {
         Order storage order = orders[_orderId];
-        require(order.user != address(0), "Order not active"); // Check if order exists
-        require(order.user == msg.sender, "Not order owner");
-        require(order.status == OrderStatus.Active || order.status == OrderStatus.PartiallyFilled, "Order not active");
+        if (order.user == address(0)) revert OrderNotActive(); // Check if order exists
+        if (order.user != msg.sender) revert NotOrderOwner();
+        if (order.status != OrderStatus.Active && order.status != OrderStatus.PartiallyFilled) {
+            revert OrderNotActiveOrPartiallyFilled();
+        }
         
         uint256 remainingAmount = order.amount - order.filledAmount;
         
@@ -173,10 +186,9 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
             // Return unused collateral
             uint256 unusedCollateral = (remainingAmount * order.price) / PRICE_DENOMINATOR;
             if (unusedCollateral > 0) {
-                require(
-                    collateralToken.transfer(msg.sender, unusedCollateral),
-                    "Collateral return failed"
-                );
+                if (!collateralToken.transfer(msg.sender, unusedCollateral)) {
+                    revert CollateralReturnFailed();
+                }
             }
         } else {
             // Return unused tokens
@@ -297,23 +309,20 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
             uint256 totalExcess = excessFromPriceDiff + excessFromUnfilled;
             
             if (totalExcess > 0) {
-                require(
-                    collateralToken.transfer(order1.user, totalExcess),
-                    "Collateral return failed"
-                );
+                if (!collateralToken.transfer(order1.user, totalExcess)) {
+                    revert CollateralReturnFailed();
+                }
             }
             
             // Give collateral to sell order user
-            require(
-                collateralToken.transfer(order2.user, totalValue - fee),
-                "Collateral transfer failed"
-            );
+            if (!collateralToken.transfer(order2.user, totalValue - fee)) {
+                revert CollateralTransferFailed();
+            }
         } else {
             // Sell order: give collateral, take tokens
-            require(
-                collateralToken.transfer(order1.user, totalValue - fee),
-                "Collateral transfer failed"
-            );
+            if (!collateralToken.transfer(order1.user, totalValue - fee)) {
+                revert CollateralTransferFailed();
+            }
             
             // Return excess tokens
             uint256 excessTokens = order1.amount - order1.filledAmount;
@@ -410,7 +419,7 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
      * @dev Update trading fee (only owner)
      */
     function setTradingFee(uint256 _newFee) external onlyOwner {
-        require(_newFee <= 1000, "Fee too high"); // Max 10%
+        if (_newFee > 1000) revert FeeTooHigh(); // Max 10%
         uint256 oldFee = tradingFee;
         tradingFee = _newFee;
         emit TradingFeeUpdated(oldFee, _newFee);
@@ -421,11 +430,10 @@ contract OrderBook is Ownable, Pausable, ReentrancyGuard {
      */
     function withdrawFees() external onlyOwner {
         uint256 balance = collateralToken.balanceOf(address(this));
-        require(balance > 0, "No fees to withdraw");
-        require(
-            collateralToken.transfer(owner(), balance),
-            "Fee withdrawal failed"
-        );
+        if (balance == 0) revert NoFeesToWithdraw();
+        if (!collateralToken.transfer(owner(), balance)) {
+            revert FeeWithdrawalFailed();
+        }
     }
     
     /**
